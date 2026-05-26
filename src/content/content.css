@@ -1,0 +1,37 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+:host {
+  font-family: 'Outfit', system-ui, sans-serif;
+  color-scheme: dark;
+  /* Ensure z-index values work correctly within shadow DOM */
+  --z-index-popup: 2147483646;
+  --z-index-dot: 2147483647;
+}
+
+/* Shadow root container for AI assistant UI */
+.ai-assistant-shadow-root {
+  font-family: 'Outfit', system-ui, sans-serif;
+}
+
+/**
+ * Portal container for floating elements that need to escape shadow DOM constraints.
+ * Note: Currently we render all UI inline within shadow DOM, but this container
+ * is preserved for future Radix portal support if needed.
+ * 
+ * If using Radix Portal/Dialog/Select with custom portal containers:
+ * <Portal container={portalElement}> where portalElement is this div
+ */
+.ai-assistant-portal-root {
+  /* Portals rendered inside shadow DOM stay within shadow boundary */
+  position: fixed;
+  pointer-events: none;
+  z-index: var(--z-index-popup);
+}
+
+/* Ensure no CSS resets leak out to host page */
+.ai-assistant-shadow-root * {
+  /* Explicitly don't reset box-sizing for host page compatibility */
+  box-sizing: inherit;
+}
+
