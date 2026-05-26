@@ -54,13 +54,13 @@ export function locatePlainTextSpan(
   return null;
 }
 
-export function replaceInContentEditable(
+export async function replaceInContentEditable(
   element: HTMLElement,
   start: number,
   end: number,
   replacement: string,
   options?: ReplaceInEditorOptions,
-): TransactionResult {
+): Promise<TransactionResult> {
   const root = resolveEditorRoot(element);
   const currentText = extractPlainText(root);
   const snapshot = options?.fieldSnapshot;
@@ -108,7 +108,7 @@ export function replaceInContentEditable(
     expectedSlice,
   );
 
-  return applyEditorTransaction(ctx);
+  return await applyEditorTransaction(ctx);
 }
 
 export function notifyEditorChange(_element: HTMLElement): void {}

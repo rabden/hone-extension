@@ -11,6 +11,24 @@ const define = {
 export default defineConfig(() => {
   const isBackground = process.env.ENTRY === 'background';
   const isContent = process.env.ENTRY === 'content';
+  const isBridge = process.env.ENTRY === 'bridge';
+
+  if (isBridge) {
+    return {
+      define,
+      build: {
+        emptyOutDir: false,
+        outDir: 'dist',
+        lib: {
+          entry: resolve(__dirname, 'src/content/main-world-bridge.ts'),
+          name: 'bridge',
+          formats: ['es'] as import('vite').LibraryFormats[],
+          fileName: () => 'main-world-bridge.js',
+        },
+        minify: false,
+      },
+    };
+  }
 
   if (isBackground) {
     return {

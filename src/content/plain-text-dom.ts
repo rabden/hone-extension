@@ -34,16 +34,26 @@ export function domPointFromOffset(
 ): { node: Node; offset: number } {
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
   let node: Node | null = walker.nextNode();
-  let cum = 0;
   let last: Text | null = null;
+
+  // Use a range to verify character counts as we go.
+  // This is more robust than manual accumulation because it matches range.toString() logic.
+  const range = document.createRange();
+  range.setStart(root, 0);
 
   while (node) {
     const textNode = node as Text;
-    const len = textNode.data.length;
-    if (cum + len >= charIndex) {
-      return { node: textNode, offset: Math.max(0, charIndex - cum) };
+    range.setEnd(textNode, textNode.data.length);
+    const currentFullLength = range.toString().length;
+
+    if (currentFullLength >= charIndex) {
+      // It's in this node. Find the exact offset.
+      range.setEnd(textNode, 0);
+      const lengthBeforeNode = range.toString().length;
+      const offsetInNode = charIndex - lengthBeforeNode;
+      return { node: textNode, offset: Math.max(0, Math.min(offsetInNode, textNode.data.length)) };
     }
-    cum += len;
+
     last = textNode;
     node = walker.nextNode();
   }

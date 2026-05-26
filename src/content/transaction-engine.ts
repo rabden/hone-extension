@@ -99,30 +99,43 @@ function normalizePlain(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
-function verifyDomReplace(ctx: TransactionContext): boolean {
-  const after = extractPlainText(ctx.root);
-  const expected =
-    ctx.beforeText.substring(0, ctx.start) +
-    ctx.replacement +
-    ctx.beforeText.substring(ctx.end);
-  const oldPart = ctx.expectedSlice;
+async function verifyDomReplace(ctx: TransactionContext, maxWaitMs = 150): Promise<boolean> {
+  const startTime = performance.now();
 
-  if (after === expected) return true;
-  if (normalizePlain(after) === normalizePlain(expected)) return true;
+  while (performance.now() - startTime < maxWaitMs) {
+    const after = extractPlainText(ctx.root);
+    const expected =
+      ctx.beforeText.substring(0, ctx.start) +
+      ctx.replacement +
+      ctx.beforeText.substring(ctx.end);
+    const oldPart = ctx.expectedSlice;
 
-  if (
-    oldPart.length > 0 &&
-    ctx.replacement.length > 0 &&
-    after.includes(oldPart) &&
-    after.includes(ctx.replacement)
-  ) {
-    return false;
+    if (after === expected || normalizePlain(after) === normalizePlain(expected)) {
+      return true;
+    }
+
+    if (
+      oldPart.length > 0 &&
+      ctx.replacement.length > 0 &&
+      after.includes(oldPart) &&
+      after.includes(ctx.replacement)
+    ) {
+      // Still showing old part AND new replacement? 
+      // This might mean it was appended instead of replaced.
+    }
+
+    const probe = ctx.replacement.trim().slice(0, Math.min(48, ctx.replacement.length));
+    if (!probe) return true;
+
+    if (after.includes(probe) && (!oldPart || !after.includes(oldPart))) {
+      return true;
+    }
+
+    // Yield execution to allow the host page's renderer to update the DOM
+    await new Promise((resolve) => setTimeout(resolve, 16));
   }
 
-  const probe = ctx.replacement.trim().slice(0, Math.min(48, ctx.replacement.length));
-  if (!probe) return true;
-
-  return after.includes(probe) && (!oldPart || !after.includes(oldPart));
+  return false;
 }
 
 function prepareDomSelection(ctx: TransactionContext): void {
@@ -140,7 +153,7 @@ function prepareDomSelection(ctx: TransactionContext): void {
 }
 
 /** Slate/React: commit via internal editor API (Discord). No execCommand here. */
-function commitViaSlateApi(ctx: TransactionContext): boolean {
+async function commitViaSlateApi(ctx: TransactionContext): Promise<boolean> {
   const found = findSlateEditor(ctx.root);
   if (!found) return false;
 
@@ -157,14 +170,59 @@ function commitViaSlateApi(ctx: TransactionContext): boolean {
     editor.insertText(ctx.replacement);
     editor.onChange?.();
     syncSelectionChange();
-    return verifyDomReplace({ ...ctx, root: slateRoot });
+    return await verifyDomReplace({ ...ctx, root: slateRoot });
   } catch {
     return false;
   }
 }
 
+/** 
+ * Slate/React: Bridge to Main World to access React Fiber.
+ * Necessary because Content Scripts are in an Isolated World.
+ */
+async function commitViaMainWorldSlate(ctx: TransactionContext): Promise<boolean> {
+  const slateRoot =
+    (ctx.root.closest("[data-slate-editor='true']") as HTMLElement | null) ??
+    (ctx.root.querySelector("[data-slate-editor='true']") as HTMLElement | null);
+
+  if (!slateRoot) return false;
+
+  // Ensure it has an ID so we can find it in the Main World
+  if (!slateRoot.id) {
+    slateRoot.id = `hone-slate-${Math.random().toString(36).slice(2, 11)}`;
+  }
+
+  return new Promise((resolve) => {
+    const handleResult = (event: MessageEvent) => {
+      if (event.source !== window || event.data?.type !== "HONE_TRANSACTION_RESULT") return;
+      
+      window.removeEventListener("message", handleResult);
+      if (event.data.success) {
+        // Even if the bridge says success, verify the DOM update from our side
+        verifyDomReplace({ ...ctx, root: slateRoot }).then(resolve);
+      } else {
+        resolve(false);
+      }
+    };
+
+    window.addEventListener("message", handleResult);
+    
+    window.postMessage({
+      type: "HONE_RUN_SLATE_TRANSACTION",
+      targetId: slateRoot.id,
+      replacement: ctx.replacement
+    }, "*");
+
+    // Safety timeout
+    setTimeout(() => {
+      window.removeEventListener("message", handleResult);
+      resolve(false);
+    }, 1000);
+  });
+}
+
 /** Lexical / many CE: one beforeinput with insertReplacementText */
-function commitViaBeforeInput(ctx: TransactionContext): boolean {
+async function commitViaBeforeInput(ctx: TransactionContext): Promise<boolean> {
   prepareDomSelection(ctx);
 
   try {
@@ -176,14 +234,14 @@ function commitViaBeforeInput(ctx: TransactionContext): boolean {
     });
     ctx.root.dispatchEvent(evt);
     syncSelectionChange();
-    return verifyDomReplace(ctx);
+    return await verifyDomReplace(ctx);
   } catch {
     return false;
   }
 }
 
 /** Simulated paste — editors often commit this as a real transaction */
-function commitViaPasteEvent(ctx: TransactionContext): boolean {
+async function commitViaPasteEvent(ctx: TransactionContext): Promise<boolean> {
   prepareDomSelection(ctx);
 
   try {
@@ -197,14 +255,14 @@ function commitViaPasteEvent(ctx: TransactionContext): boolean {
       }),
     );
     syncSelectionChange();
-    return verifyDomReplace(ctx);
+    return await verifyDomReplace(ctx);
   } catch {
     return false;
   }
 }
 
 /** Last resort for generic CE — can desync Slate (ghost state on Discord) */
-function commitViaExecCommand(ctx: TransactionContext): boolean {
+async function commitViaExecCommand(ctx: TransactionContext): Promise<boolean> {
   prepareDomSelection(ctx);
 
   try {
@@ -212,19 +270,19 @@ function commitViaExecCommand(ctx: TransactionContext): boolean {
       return false;
     }
     syncSelectionChange();
-    return verifyDomReplace(ctx);
+    return await verifyDomReplace(ctx);
   } catch {
     return false;
   }
 }
 
-function runStrategies(
+async function runStrategies(
   ctx: TransactionContext,
-  strategies: Array<(ctx: TransactionContext) => boolean>,
-): boolean {
+  strategies: Array<(ctx: TransactionContext) => Promise<boolean>>,
+): Promise<boolean> {
   for (const strategy of strategies) {
     const before = extractPlainText(ctx.root);
-    if (strategy(ctx)) {
+    if (await strategy(ctx)) {
       return true;
     }
     const after = extractPlainText(ctx.root);
@@ -232,7 +290,7 @@ function runStrategies(
       ctx.replacement &&
       after !== before &&
       after.includes(ctx.replacement.slice(0, 32)) &&
-      !verifyDomReplace(ctx)
+      !(await verifyDomReplace(ctx))
     ) {
       return false;
     }
@@ -243,16 +301,21 @@ function runStrategies(
 /**
  * Commit replacement into the editor. Picks framework-appropriate strategies only.
  */
-export function applyEditorTransaction(
+export async function applyEditorTransaction(
   ctx: TransactionContext,
-): TransactionResult {
+): Promise<TransactionResult> {
   const framework = ctx.framework;
 
   if (framework === "slate") {
-    if (commitViaSlateApi(ctx)) {
+    // Try Main World bridge first as it's most reliable for Slate
+    if (await commitViaMainWorldSlate(ctx)) {
+      return { committed: true, confidence: 0.95, suggestClipboardPaste: false };
+    }
+    // Fallback to Isolated World attempt (likely fails in production but good for dev)
+    if (await commitViaSlateApi(ctx)) {
       return { committed: true, confidence: 0.9, suggestClipboardPaste: false };
     }
-    if (commitViaPasteEvent(ctx)) {
+    if (await commitViaPasteEvent(ctx)) {
       return { committed: true, confidence: 0.75, suggestClipboardPaste: false };
     }
     return {
@@ -263,13 +326,13 @@ export function applyEditorTransaction(
   }
 
   if (framework === "lexical") {
-    if (commitViaBeforeInput(ctx)) {
+    if (await commitViaBeforeInput(ctx)) {
       return { committed: true, confidence: 0.9, suggestClipboardPaste: false };
     }
-    if (commitViaPasteEvent(ctx)) {
+    if (await commitViaPasteEvent(ctx)) {
       return { committed: true, confidence: 0.8, suggestClipboardPaste: false };
     }
-    if (commitViaExecCommand(ctx)) {
+    if (await commitViaExecCommand(ctx)) {
       return { committed: true, confidence: 0.6, suggestClipboardPaste: false };
     }
     return {
@@ -279,7 +342,7 @@ export function applyEditorTransaction(
     };
   }
 
-  const ok = runStrategies(ctx, [
+  const ok = await runStrategies(ctx, [
     commitViaBeforeInput,
     commitViaExecCommand,
     commitViaPasteEvent,

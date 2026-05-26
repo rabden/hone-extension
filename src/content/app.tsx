@@ -177,7 +177,7 @@ export default function App({
     }
 
     const applyResult = async () => {
-      const tx = ctx.adapter!.replaceRange(
+      const tx = await ctx.adapter!.replaceRange(
         preview.span.start,
         preview.span.end,
         preview.resultText,
@@ -350,7 +350,7 @@ export default function App({
               return;
             }
 
-            const tx = adapter.replaceRange(
+            const tx = await adapter.replaceRange(
               span.start,
               span.end,
               response.text,

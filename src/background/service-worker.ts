@@ -57,8 +57,23 @@ function chatMessages(system?: string, prompt?: string) {
   return msgs;
 }
 
+async function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = 12000): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const response = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    return response;
+  } finally {
+    clearTimeout(id);
+  }
+}
+
 async function fetchOpenRouter(apiKey: string, model: string, prompt: string, system?: string): Promise<string> {
-  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const res = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -71,7 +86,7 @@ async function fetchOpenRouter(apiKey: string, model: string, prompt: string, sy
       messages: chatMessages(system, prompt),
       temperature: 0.7
     })
-  });
+  }, 15000); // 15s timeout for OpenRouter
 
   if (!res.ok) {
     const errorJson = await res.json().catch(() => ({}));
@@ -116,7 +131,7 @@ async function callAIProvider(actionId: string, text: string, url: string): Prom
 
     if (!apiKey) throw new Error('OpenAI API Key is missing. Please add it in the extension options.');
 
-    const res = await fetch(endpoint, {
+    const res = await fetchWithTimeout(endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -127,7 +142,7 @@ async function callAIProvider(actionId: string, text: string, url: string): Prom
         messages: chatMessages(system, prompt),
         temperature: 0.7
       })
-    });
+    }, 15000);
 
     if (!res.ok) {
       const errorJson = await res.json().catch(() => ({}));
@@ -157,7 +172,7 @@ async function callAIProvider(actionId: string, text: string, url: string): Prom
       body.system = [{ text: system }];
     }
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetchWithTimeout('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -166,7 +181,7 @@ async function callAIProvider(actionId: string, text: string, url: string): Prom
         'dangerously-allow-browser': 'true'
       },
       body: JSON.stringify(body)
-    });
+    }, 20000);
 
     if (!res.ok) {
       const errorJson = await res.json().catch(() => ({}));
@@ -195,13 +210,13 @@ async function callAIProvider(actionId: string, text: string, url: string): Prom
       body.systemInstruction = { parts: [{ text: system }] };
     }
 
-    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+    const res = await fetchWithTimeout(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
       },
       body: JSON.stringify(body)
-    });
+    }, 15000);
 
     if (!res.ok) {
       const errorJson = await res.json().catch(() => ({}));
@@ -288,11 +303,8 @@ async function callAIProvider(actionId: string, text: string, url: string): Prom
     const otherModels = FREE_MODELS.filter(m => m !== baseModel);
     const modelCycle = [baseModel, ...otherModels];
 
-    // Cycle through all models thrice (max 3 * 5 = 15 attempts)
-    const attempts: string[] = [];
-    for (let i = 0; i < 3; i++) {
-      attempts.push(...modelCycle);
-    }
+    // Limit to one cycle of models (max 5 attempts) to stay within MV3 lifecycle limits
+    const attempts = modelCycle;
 
     let lastError: Error | null = null;
     for (let idx = 0; idx < attempts.length; idx++) {
@@ -310,7 +322,7 @@ async function callAIProvider(actionId: string, text: string, url: string): Prom
       }
     }
 
-    throw new Error(`All OpenRouter Free models failed after 3 cycles (15 retries). Last error: ${lastError ? lastError.message : 'Unknown'}`);
+    throw new Error(`OpenRouter Free failed after ${attempts.length} attempts. Last error: ${lastError ? lastError.message : 'Unknown'}`);
   }
 }
 

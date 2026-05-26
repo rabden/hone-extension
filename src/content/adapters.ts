@@ -69,7 +69,7 @@ export interface EditableAdapter {
     end: number,
     replacement: string,
     options?: ReplaceRangeOptions,
-  ): boolean | TransactionResult;
+  ): Promise<boolean | TransactionResult>;
 
   /**
    * Get the bounding rect of the selected text or cursor position
@@ -160,12 +160,12 @@ export class NativeInputAdapter implements EditableAdapter {
     }
   }
 
-  replaceRange(
+  async replaceRange(
     start: number,
     end: number,
     replacement: string,
     options?: ReplaceRangeOptions,
-  ): boolean {
+  ): Promise<boolean> {
     const full = this.element.value;
     const located = locateTextSpan(full, start, end, options?.expectedText);
     if (!located) return false;
@@ -355,13 +355,13 @@ export class ContentEditableAdapter implements EditableAdapter {
     replaceInContentEditable(this.element, caret, caret, text);
   }
 
-  replaceRange(
+  async replaceRange(
     start: number,
     end: number,
     replacement: string,
     options?: ReplaceRangeOptions,
-  ): TransactionResult {
-    return replaceInContentEditable(this.element, start, end, replacement, {
+  ): Promise<TransactionResult> {
+    return await replaceInContentEditable(this.element, start, end, replacement, {
       expectedText: options?.expectedText,
       fieldSnapshot: options?.fieldSnapshot,
     });
